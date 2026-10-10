@@ -400,4 +400,8 @@ async def setup(bot):
 ## 📄 License
 
 MIT — do as you please. A small acknowledgement is appreciated but not required.
+
+## Credits
+- Original Creator & Developer: [@YusupJawier](https://github.com/YusupJawier)
+
 # Roselinne-Frostveil

@@ -28,7 +28,7 @@ GAYA OUTPUT:
 - Personality harus terasa dari pilihan kata singkat, bukan dari respons panjang.
 - Sebelum mengirim, hapus setiap kata yang tidak diperlukan dan persingkat lagi jika bisa.
 - Hanya jawab lebih panjang jika user meminta penjelasan, analisis, atau jawaban mendalam.
-"""
+"""     
 
 
 class AIClient:
