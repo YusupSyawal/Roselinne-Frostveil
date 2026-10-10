@@ -1,0 +1,29 @@
+# ──────────────────────────────────────────────
+#  Roselinne Frostveil — Python Dependencies
+#  Install with:  pip install -r requirements.txt
+# ──────────────────────────────────────────────
+
+# Discord
+discord.py>=2.4.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Async HTTP (Groq, Ollama, DuckDuckGo Search, Image Downloads)
+aiohttp>=3.9.0
+
+# OpenAI SDK (used for the openai provider)
+openai>=1.30.0
+
+# Google Generative AI (for Gemini)
+google-generativeai>=0.3.0
+
+# Type hints backport (Python <3.11 compat)
+typing_extensions>=4.9.0
+
+# Web search (optional, for response verification)
+# Note: Using DuckDuckGo API which doesn't require authentication
+duckduckgo-search>=3.9.0
+
+# Image processing and vision analysis
+Pillow>=10.0.0
