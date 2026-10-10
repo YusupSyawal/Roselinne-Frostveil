@@ -35,7 +35,7 @@ class ImageHandler:
                         log.warning(f"Failed to download image: HTTP {resp.status}")
                         return None
 
-                    content_type = resp.headers.get("content-type", "")
+                    content_type = resp.headers.get("content-type", "").lower().split(";", 1)[0]
                     if content_type not in ImageHandler.SUPPORTED_FORMATS:
                         log.warning(f"Unsupported image format: {content_type}")
                         return None

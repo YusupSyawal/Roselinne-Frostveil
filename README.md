@@ -209,6 +209,48 @@ You should see:
 
 ---
 
+## 🛡️ AI Control and Moderator Mode
+
+Roselinne keeps Discord connectivity, member events, moderation-related
+commands, welcome/leave messages, `/ping`, and `/help` working when AI is off.
+AI requests are disabled by default until a server administrator uses:
+
+- `/ai_on` — enable AI responses for the current server
+- `/ai_off` — disable chat, mentions, and image analysis before any AI API call
+- `/ai_status` — check the current state
+
+The commands require **Manage Server** (or Administrator) permission. State is
+stored locally in `data/runtime_state.json`; if that file is missing or cannot
+be read, AI remains OFF. Use `/welcomechannel` and `/leavechannel` to configure
+member event channels. The optional `WELCOME_CHANNEL_ID` and
+`LEAVE_CHANNEL_ID` environment variables provide fallback channel IDs.
+
+### Run as a separate Windows process
+
+From PowerShell, outside the VS Code debugger:
+
+```powershell
+Set-Location C:\path\to\roselinne-frostveil
+.\venv\Scripts\python.exe .\main.py
+```
+
+Keep the terminal open, or use Windows Task Scheduler to start it at logon:
+
+1. Open **Task Scheduler** → **Create Task**.
+2. On **General**, choose **Run whether user is logged on or not** if desired.
+3. On **Triggers**, add **At log on** (or **At startup**).
+4. On **Actions**, choose **Start a program**:
+   - **Program:** `C:\path\to\roselinne-frostveil\venv\Scripts\python.exe`
+   - **Arguments:** `C:\path\to\roselinne-frostveil\main.py`
+   - **Start in:** `C:\path\to\roselinne-frostveil`
+5. On **Conditions**, disable the AC-power restriction if appropriate.
+6. Save the task and test **Run**. Review the bot log if startup fails.
+
+Use the virtual-environment interpreter directly; do not rely on a different
+Python selected by VS Code or on a global `python` command.
+
+---
+
 ## 🤖 AI Provider Setup
 
 ### OpenAI (default)
@@ -230,7 +272,13 @@ OPENAI_MODEL=gpt-4o-mini   # or gpt-4o for higher quality
 AI_PROVIDER=groq
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=openai/gpt-oss-120b
+GROQ_VISION_MODEL=qwen/qwen3.8-27b
 ```
+
+`GROQ_MODEL` remains the text-chat model. `GROQ_VISION_MODEL` is used only for
+image and meme analysis. The documented Groq vision model is
+`qwen/qwen3.8-27b`; verify the active model list before selecting another
+preview model.
 
 ### Ollama (local, no API key)
 
@@ -358,6 +406,7 @@ docker compose up --build -d
 | `OPENAI_MODEL` | `gpt-4o-mini` | Any OpenAI chat model |
 | `GROQ_API_KEY` | — | Required if `AI_PROVIDER=groq` |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Any Groq model |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Groq multimodal image model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `llama3` | Any pulled Ollama model |
 | `MEMORY_MAX_MESSAGES` | `20` | Messages kept per user |

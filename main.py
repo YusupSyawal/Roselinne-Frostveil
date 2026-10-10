@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from config.settings import BotSettings
 from utils.logger import setup_logger
+from utils.runtime_state import RuntimeState
 
 # ─────────────────────────────────────────────
 # Bootstrap
@@ -43,11 +44,13 @@ class RoselinneBot(commands.Bot):
         )
 
         self.settings = BotSettings()
+        self.runtime_state = RuntimeState(self.settings.runtime_state_path)
 
     async def setup_hook(self) -> None:
         """Called once before the bot connects. Load all extensions here."""
         extensions = [
             "commands.chat",
+            "commands.ai_control",
             "commands.image",
             "commands.ping",
             "commands.welcome",

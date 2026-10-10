@@ -44,6 +44,13 @@ class ChatCog(commands.Cog, name="Chat"):
     async def chat(self, interaction: discord.Interaction, message: str) -> None:
         user_id = interaction.user.id
         guild_id = interaction.guild_id or 0
+        if not await self.bot.runtime_state.is_ai_enabled(guild_id):
+            await interaction.response.send_message(
+                "❄️ AI sedang OFF di server ini. Moderator dan command lain tetap aktif.",
+                ephemeral=True,
+            )
+            return
+
         log.info(
             "[CHATBOT USER]\nUsername: %s\nDisplay Name: %s\nUser ID: %s\nMessage: %s",
             interaction.user.name,
@@ -108,6 +115,9 @@ class ChatCog(commands.Cog, name="Chat"):
         message: str,
     ) -> str:
         """Fetch AI reply with web verification and persist both turns to memory."""
+        if not await self.bot.runtime_state.is_ai_enabled(guild_id):
+            return "❄️ AI sedang OFF di server ini."
+
         history = await self.memory.get_history(guild_id, user_id)
         messages = build_messages(self.system_prompt, history, message)
 

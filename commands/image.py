@@ -5,10 +5,9 @@ Slash commands for image analysis and commentary.
 """
 
 import logging
-from io import BytesIO
 
 import discord
-from discord import app_commands, File
+from discord import app_commands
 from discord.ext import commands
 
 from ai.vision_analyzer import VisionAnalyzer
@@ -44,13 +43,19 @@ class ImageCog(commands.Cog, name="Image"):
         prompt: str = "Describe what you see in this image.",
     ) -> None:
         user_id = interaction.user.id
+        if not await self.bot.runtime_state.is_ai_enabled(interaction.guild_id or 0):
+            await interaction.response.send_message(
+                "❄️ AI sedang OFF di server ini. Analisis gambar dinonaktifkan.",
+                ephemeral=True,
+            )
+            return
 
         # ── Check if vision is supported ───────────────────
         if not VisionAnalyzer.is_vision_supported(self.settings.ai_provider):
             embed = discord.Embed(
                 title="Vision Not Available",
                 description=(
-                    f"Image analysis requires OpenAI or Gemini. "
+                    f"Image analysis requires Groq, OpenAI, or Gemini. "
                     f"Current provider: `{self.settings.ai_provider}`"
                 ),
                 color=self.settings.COLOR_WARNING,
@@ -59,7 +64,11 @@ class ImageCog(commands.Cog, name="Image"):
             return
 
         # ── Validate attachment ────────────────────────────
-        if not image.content_type or not image.content_type.startswith("image/"):
+        content_type = (image.content_type or "").lower().split(";", 1)[0]
+        has_image_extension = image.filename.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".gif", ".webp")
+        )
+        if not content_type.startswith("image/") and not has_image_extension:
             embed = discord.Embed(
                 title="Invalid File",
                 description="Please upload an image file (JPEG, PNG, GIF, WebP).",
@@ -120,7 +129,13 @@ class ImageCog(commands.Cog, name="Image"):
                 "Provide a detailed but concise analysis. HANYA BAHASA INDONESIA!"
             )
 
-            analysis = await self.vision.analyze_image(compressed, analysis_prompt)
+            analysis = await self.vision.analyze_image(
+                compressed,
+                analysis_prompt,
+                username=interaction.user.name,
+                display_name=interaction.user.display_name,
+                user_id=user_id,
+            )
 
             if not analysis:
                 await interaction.followup.send(

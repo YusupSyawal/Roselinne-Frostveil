@@ -20,6 +20,11 @@ COMMANDS_INFO = [
     ("/personality",   "Learn about me and view your chat stats."),
     ("/ping",          "Check if I am present and attentive."),
     ("/help",          "You are already here."),
+    ("/ai_on",         "Enable AI responses (Manage Server)."),
+    ("/ai_off",        "Disable AI requests (Manage Server)."),
+    ("/ai_status",     "Show the current AI status (Manage Server)."),
+    ("/welcomechannel", "Configure the welcome message channel (Manage Server)."),
+    ("/leavechannel",  "Configure the leave message channel (Manage Server)."),
 ]
 
 

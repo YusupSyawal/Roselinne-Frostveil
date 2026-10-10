@@ -28,6 +28,8 @@ env/
 # Data & logs (keep structure, ignore content)
 data/memory.db
 data/memory/*.json
+data/runtime_state.json
+data/runtime_state.tmp
 logs/*.log
 logs/*.log.*
 

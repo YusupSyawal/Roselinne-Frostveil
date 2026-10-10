@@ -33,8 +33,8 @@ class MemberCog(commands.Cog, name="Member"):
 
         log.info(f"Member '{member.name}' (ID: {member.id}) joined {guild.name}")
 
-        # Find general channel (by name or ID)
-        general_channel = self._find_welcome_channel(guild)
+        # Find configured or automatically selected channel.
+        general_channel = await self._find_welcome_channel(guild, "welcome")
         
         if not general_channel:
             log.warning(f"No general channel found in {guild.name}")
@@ -51,8 +51,54 @@ class MemberCog(commands.Cog, name="Member"):
         except Exception as e:
             log.error(f"Error sending welcome message: {e}")
 
-    def _find_welcome_channel(self, guild: discord.Guild) -> discord.abc.Messageable:
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        """Announce members leaving the guild without using AI."""
+        guild = member.guild
+        channel = await self._find_welcome_channel(guild, "leave")
+        if not channel:
+            log.warning(f"No leave channel found in {guild.name}")
+            return
+
+        embed = discord.Embed(
+            title="❄️ Farewell",
+            description=f"{member.mention} has left {guild.name}. The frost grows quieter.",
+            color=self.settings.COLOR_INFO,
+            timestamp=datetime.now(timezone.utc),
+        )
+        try:
+            await channel.send(embed=embed)
+            log.info("Leave message sent to %s for %s", channel.name, member.name)
+        except discord.Forbidden:
+            log.error("Cannot send leave message in %s (permission denied)", channel.name)
+        except discord.HTTPException as exc:
+            log.error("Error sending leave message: %s", exc)
+
+    async def _find_welcome_channel(
+        self, guild: discord.Guild, channel_type: str
+    ) -> discord.TextChannel | None:
         """Find the general/welcome channel."""
+        configured_id = await self.bot.runtime_state.get_channel_id(
+            guild.id, channel_type
+        )
+        if configured_id is None:
+            configured_id = (
+                self.settings.welcome_channel_id
+                if channel_type == "welcome"
+                else self.settings.leave_channel_id
+            )
+        if configured_id is not None:
+            configured_channel = guild.get_channel(configured_id)
+            if isinstance(configured_channel, discord.TextChannel):
+                if configured_channel.permissions_for(guild.me).send_messages:
+                    return configured_channel
+            log.warning(
+                "Configured %s channel %s is unavailable in %s",
+                channel_type,
+                configured_id,
+                guild.name,
+            )
+
         # Try to find by name first
         for channel in guild.text_channels:
             if channel.name in ("general", "welcome", "introductions"):

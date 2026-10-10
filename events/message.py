@@ -39,6 +39,9 @@ class MessageCog(commands.Cog, name="Message"):
         username = getattr(message.author, "name", "") or ""
         display_name = getattr(message.author, "display_name", "") or username
         user_id = message.author.id
+        ai_enabled = await self.bot.runtime_state.is_ai_enabled(
+            message.guild.id if message.guild else 0
+        )
         log.info(
             "[CHATBOT USER]\nUsername: %s\nDisplay Name: %s\nUser ID: %s\nMessage: %s",
             username or "unknown",
@@ -48,19 +51,24 @@ class MessageCog(commands.Cog, name="Message"):
         )
 
         # ── Check for images in attachments ────────────────
-        if message.attachments:
+        if ai_enabled and message.attachments:
             image_attachments = [
                 att for att in message.attachments
-                if att.content_type and att.content_type.startswith("image/")
+                if self._is_image_attachment(att)
             ]
             
             if image_attachments:
                 # Handle images first (auto-react, no mention needed)
-                await self._handle_images(message, image_attachments)
+                await self._handle_images(
+                    message,
+                    image_attachments,
+                    username,
+                    display_name,
+                )
                 # Don't return, continue to process text if any
 
         # ── Check if bot is mentioned ──────────────────────
-        if self.bot.user and message.mentions and self.bot.user in message.mentions:
+        if ai_enabled and self.bot.user and message.mentions and self.bot.user in message.mentions:
             # Remove the mention from the message to get the actual content
             content = message.content.replace(f"<@{self.bot.user.id}>", "").replace(f"<@!{self.bot.user.id}>", "").strip()
             
@@ -104,6 +112,9 @@ class MessageCog(commands.Cog, name="Message"):
         message_text: str,
     ) -> str:
         """Fetch AI reply and persist conversation."""
+        if not await self.bot.runtime_state.is_ai_enabled(guild_id):
+            return "❄️ AI sedang OFF di server ini."
+
         history = await self.memory.get_history(guild_id, user_id)
         messages = build_messages(self.system_prompt, history, message_text)
 
@@ -127,7 +138,22 @@ class MessageCog(commands.Cog, name="Message"):
 
         return reply
 
-    async def _handle_images(self, message: discord.Message, attachments: list) -> None:
+    @staticmethod
+    def _is_image_attachment(attachment: discord.Attachment) -> bool:
+        """Accept Discord image MIME types and common image filename extensions."""
+        if attachment.content_type:
+            return attachment.content_type.lower().split(";", 1)[0].startswith("image/")
+        return attachment.filename.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".gif", ".webp")
+        )
+
+    async def _handle_images(
+        self,
+        message: discord.Message,
+        attachments: list[discord.Attachment],
+        username: str,
+        display_name: str,
+    ) -> None:
         """Handle image attachments and provide AI commentary."""
         guild_id = message.guild.id if message.guild else 0
         user_id = message.author.id
@@ -174,7 +200,13 @@ class MessageCog(commands.Cog, name="Message"):
                 )
 
                 # Analyze image
-                analysis = await self.vision.analyze_image(compressed, reaction_prompt)
+                analysis = await self.vision.analyze_image(
+                    compressed,
+                    reaction_prompt,
+                    username=username,
+                    display_name=display_name,
+                    user_id=user_id,
+                )
                 if analysis:
                     # Send the reaction
                     await message.reply(analysis, mention_author=False)

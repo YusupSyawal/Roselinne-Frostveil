@@ -25,6 +25,9 @@ class BotSettings:
 
     groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
     groq_model: str = field(default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"))
+    groq_vision_model: str = field(
+        default_factory=lambda: os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+    )
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"))
@@ -45,6 +48,13 @@ class BotSettings:
     personality_file: Path = BASE_DIR / "config" / "personality.txt"
     memory_dir: Path = BASE_DIR / "data" / "memory"
     db_path: Path = BASE_DIR / "data" / "memory.db"
+    runtime_state_path: Path = BASE_DIR / "data" / "runtime_state.json"
+    welcome_channel_id: int | None = field(
+        default_factory=lambda: _optional_int_env("WELCOME_CHANNEL_ID")
+    )
+    leave_channel_id: int | None = field(
+        default_factory=lambda: _optional_int_env("LEAVE_CHANNEL_ID")
+    )
 
     # ── Theme colours (frost / silver-blue) ───────────────
     COLOR_PRIMARY: int = 0x7EB8D4      # soft sky blue
@@ -56,3 +66,13 @@ class BotSettings:
     def __post_init__(self):
         # Ensure data directories exist
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _optional_int_env(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{name} must be a Discord channel ID integer.") from None

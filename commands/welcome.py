@@ -11,7 +11,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from config.settings import BotSettings
-from events.member import MemberCog
 
 log = logging.getLogger("roselinne.commands.welcome")
 
@@ -75,33 +74,99 @@ class WelcomeCog(commands.Cog, name="Welcome"):
     @app_commands.default_permissions(manage_guild=True)
     async def set_welcome_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None) -> None:
         """Set the welcome message channel for this guild."""
-        # Note: This is a simple version. For persistence, you'd need to store in database.
-        # For now, we rely on the auto-detection logic in MemberCog.
+        try:
+            if channel:
+                perms = channel.permissions_for(interaction.guild.me)
+                if not perms.send_messages:
+                    embed = discord.Embed(
+                        description=f"❄️ I lack permission to send messages in {channel.mention}.",
+                        color=self.settings.COLOR_ERROR,
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
 
-        if channel:
-            perms = channel.permissions_for(interaction.guild.me)
-            if not perms.send_messages:
-                embed = discord.Embed(
-                    description=f"❄️ I lack permission to send messages in {channel.mention}.",
-                    color=self.settings.COLOR_ERROR,
+                await self.bot.runtime_state.set_channel_id(
+                    interaction.guild_id, "welcome", channel.id
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-
-            embed = discord.Embed(
-                title="Welcome Channel Updated",
-                description=f"New members will be welcomed in {channel.mention}.",
-                color=self.settings.COLOR_SUCCESS,
+                embed = discord.Embed(
+                    title="Welcome Channel Updated",
+                    description=f"New members will be welcomed in {channel.mention}.",
+                    color=self.settings.COLOR_SUCCESS,
+                )
+            else:
+                await self.bot.runtime_state.set_channel_id(
+                    interaction.guild_id, "welcome", None
+                )
+                embed = discord.Embed(
+                    title="Welcome Channel Reset",
+                    description="Auto-detection enabled. Will use #general or first available channel.",
+                    color=self.settings.COLOR_INFO,
+                )
+        except (OSError, ValueError) as exc:
+            log.error("Could not save welcome channel configuration: %s", exc)
+            await interaction.response.send_message(
+                "❄️ I could not save the welcome channel configuration locally.",
+                ephemeral=True,
             )
-        else:
-            embed = discord.Embed(
-                title="Welcome Channel Reset",
-                description="Auto-detection enabled. Will use #general or first available channel.",
-                color=self.settings.COLOR_INFO,
-            )
+            return
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
         log.info(f"Welcome channel set to {channel.name if channel else 'auto-detect'} in {interaction.guild.name}")
+
+    @app_commands.command(
+        name="leavechannel",
+        description="Set the channel for leave messages."
+    )
+    @app_commands.describe(channel="The channel to use for leave messages (leave blank to use auto-detection)")
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_leave_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel = None,
+    ) -> None:
+        """Set or reset the leave message channel for this guild."""
+        if channel:
+            perms = channel.permissions_for(interaction.guild.me)
+            if not perms.send_messages:
+                await interaction.response.send_message(
+                    f"❄️ I lack permission to send messages in {channel.mention}.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                await self.bot.runtime_state.set_channel_id(
+                    interaction.guild_id, "leave", channel.id
+                )
+            except (OSError, ValueError) as exc:
+                log.error("Could not save leave channel configuration: %s", exc)
+                await interaction.response.send_message(
+                    "❄️ I could not save the leave channel configuration locally.",
+                    ephemeral=True,
+                )
+                return
+            description = f"Members leaving will be announced in {channel.mention}."
+        else:
+            try:
+                await self.bot.runtime_state.set_channel_id(
+                    interaction.guild_id, "leave", None
+                )
+            except (OSError, ValueError) as exc:
+                log.error("Could not save leave channel configuration: %s", exc)
+                await interaction.response.send_message(
+                    "❄️ I could not save the leave channel configuration locally.",
+                    ephemeral=True,
+                )
+                return
+            description = "Auto-detection enabled for leave messages."
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Leave Channel Updated",
+                description=description,
+                color=self.settings.COLOR_SUCCESS,
+            ),
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
