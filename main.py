@@ -55,6 +55,7 @@ class RoselinneBot(commands.Bot):
             "commands.ping",
             "commands.welcome",
             "commands.help",
+            "commands.voice",
             "events.ready",
             "events.message",
             "events.member",
@@ -80,6 +81,15 @@ class RoselinneBot(commands.Bot):
 
     async def on_error(self, event_method: str, *args, **kwargs) -> None:
         log.exception(f"Unhandled error in event '{event_method}'")
+
+    async def close(self) -> None:
+        """Disconnect voice clients before closing the Discord connection."""
+        for voice_client in tuple(self.voice_clients):
+            try:
+                await voice_client.disconnect(force=True)
+            except (asyncio.TimeoutError, discord.DiscordException, OSError) as exc:
+                log.error("Could not disconnect voice client during shutdown: %s", exc)
+        await super().close()
 
 
 # ─────────────────────────────────────────────

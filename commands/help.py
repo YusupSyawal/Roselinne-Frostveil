@@ -25,6 +25,8 @@ COMMANDS_INFO = [
     ("/ai_status",     "Show the current AI status (Manage Server)."),
     ("/welcomechannel", "Configure the welcome message channel (Manage Server)."),
     ("/leavechannel",  "Configure the leave message channel (Manage Server)."),
+    ("/voice join",    "Join your current voice channel silently."),
+    ("/voice leave",   "Leave the voice channel in this server."),
 ]
 
 

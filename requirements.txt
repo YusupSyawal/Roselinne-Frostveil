@@ -5,6 +5,8 @@
 
 # Discord
 discord.py>=2.4.0
+# Voice channel connections; compatible with discord.py 2.x.
+PyNaCl>=1.5.0
 
 # Environment variables
 python-dotenv>=1.0.0
