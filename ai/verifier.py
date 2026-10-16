@@ -51,7 +51,7 @@ class ResponseVerifier:
             return initial_response
 
         # If we have search results, provide them for context
-        log.info(f"Found search results for question: {question[:50]}...")
+        log.debug("Found search results for verification query")
 
         # Return response with context about verification
         enhanced = self._format_enhanced_response(initial_response, search_results)

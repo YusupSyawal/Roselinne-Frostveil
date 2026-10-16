@@ -6,11 +6,13 @@ Analyze images using Groq, OpenAI, or Google Gemini vision models.
 import asyncio
 import base64
 import logging
+from contextvars import ContextVar
 from typing import List, Optional
 
 import aiohttp
 
 from config.settings import BotSettings
+from utils.usage_monitor import UsageMonitor, estimate_tokens
 
 log = logging.getLogger("roselinne.vision")
 
@@ -21,9 +23,17 @@ class VisionAnalyzer:
     MAX_IMAGE_SIZE = 20 * 1024 * 1024
     REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60, connect=10)
 
-    def __init__(self, settings: BotSettings):
+    def __init__(
+        self,
+        settings: BotSettings,
+        usage_monitor: UsageMonitor | None = None,
+    ):
         self.settings = settings
         self.provider = settings.ai_provider
+        self.usage_monitor = usage_monitor
+        self._usage_metadata: ContextVar[dict[str, int]] = ContextVar(
+            "vision_usage_metadata", default={}
+        )
 
     async def analyze_image(
         self,
@@ -32,6 +42,8 @@ class VisionAnalyzer:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
         user_id: Optional[int] = None,
+        guild_id: Optional[int] = None,
+        request_id: Optional[str] = None,
     ) -> Optional[str]:
         """Analyze an image, returning None for unsupported or failed requests."""
         if not image_data or len(image_data) > self.MAX_IMAGE_SIZE:
@@ -39,15 +51,42 @@ class VisionAnalyzer:
             return None
 
         prompt = f"{prompt}\n\n{self._identity_prompt(username, display_name, user_id)}"
+        self._usage_metadata.set({})
         if self.provider == "groq":
-            return await self._analyze_groq(image_data, prompt)
-        if self.provider == "openai":
-            return await self._analyze_openai(image_data, prompt)
-        if self.provider == "gemini":
-            return await self._analyze_gemini(image_data, prompt)
+            result = await self._analyze_groq(image_data, prompt)
+        elif self.provider == "openai":
+            result = await self._analyze_openai(image_data, prompt)
+        elif self.provider == "gemini":
+            result = await self._analyze_gemini(image_data, prompt)
+        else:
+            log.warning("Vision not supported for provider: %s", self.provider)
+            result = None
+        if self.usage_monitor is not None:
+            metadata = self._usage_metadata.get()
+            try:
+                await self.usage_monitor.record(
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    provider=self.provider,
+                    model=self._active_model,
+                    input_tokens=metadata.get("input_tokens", estimate_tokens(prompt)),
+                    output_tokens=metadata.get("output_tokens", estimate_tokens(result or "")),
+                    input_token_source="actual" if "input_tokens" in metadata else "estimated",
+                    output_token_source="actual" if "output_tokens" in metadata else "estimated",
+                    success=result is not None,
+                    request_id=request_id,
+                )
+            except Exception:
+                log.exception("Could not persist local vision usage request_id=%s", request_id)
+        return result
 
-        log.warning("Vision not supported for provider: %s", self.provider)
-        return None
+    @property
+    def _active_model(self) -> str:
+        return {
+            "groq": self.settings.groq_vision_model,
+            "openai": self.settings.openai_model,
+            "gemini": self.settings.gemini_model,
+        }.get(self.provider, "Tidak tersedia")
 
     @staticmethod
     def _identity_prompt(
@@ -147,6 +186,12 @@ class VisionAnalyzer:
         except (KeyError, IndexError, TypeError) as exc:
             log.error("Groq vision response had an unexpected shape: %s", exc)
             return None
+        usage = data.get("usage", {})
+        if usage:
+            self._usage_metadata.set({
+                "input_tokens": usage.get("prompt_tokens", 0) or 0,
+                "output_tokens": usage.get("completion_tokens", 0) or 0,
+            })
         return content.strip() if isinstance(content, str) and content.strip() else None
 
     async def _analyze_openai(self, image_data: bytes, prompt: str) -> Optional[str]:
@@ -182,6 +227,12 @@ class VisionAnalyzer:
                 max_tokens=1000,
                 temperature=0.8,
             )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                self._usage_metadata.set({
+                    "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                })
             return response.choices[0].message.content or None
         except Exception as exc:
             log.error("OpenAI vision error: %s", exc)
@@ -213,6 +264,12 @@ class VisionAnalyzer:
                     temperature=0.8,
                 ),
             )
+            usage = getattr(response, "usage_metadata", None)
+            if usage is not None:
+                self._usage_metadata.set({
+                    "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+                    "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+                })
             return response.text or None
         except Exception as exc:
             log.error("Gemini vision error: %s", exc)

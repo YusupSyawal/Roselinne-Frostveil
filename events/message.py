@@ -4,6 +4,7 @@ on_message handler — respond to @mentions and slash commands.
 """
 
 import logging
+import os
 from typing import Optional
 
 import discord
@@ -16,24 +17,52 @@ from ai.vision_analyzer import VisionAnalyzer
 from config.settings import BotSettings
 from utils.cooldown import cooldown_manager
 from utils.image import ImageHandler
+from utils.ai_workflow import AIWorkflowRegistry
 
 log = logging.getLogger("roselinne.events.message")
-
 
 class MessageCog(commands.Cog, name="Message"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.settings = BotSettings()
-        self.ai = AIClient(self.settings)
-        self.vision = VisionAnalyzer(self.settings)
+        self.ai = AIClient(
+            self.settings, getattr(bot, "usage_monitor", None)
+        )
+        self.vision = VisionAnalyzer(
+            self.settings, getattr(bot, "usage_monitor", None)
+        )
         self.image_handler = ImageHandler()
         self.memory = MemoryManager(self.settings)
         self.system_prompt = load_system_prompt(self.settings.personality_file)
+        registry = getattr(bot, "ai_workflow_registry", None)
+        if registry is None:
+            registry = AIWorkflowRegistry()
+            bot.ai_workflow_registry = registry
+        self.workflow_registry: AIWorkflowRegistry = registry
+
+    def _workflow_registry(self) -> AIWorkflowRegistry:
+        registry = getattr(self, "workflow_registry", None)
+        if not isinstance(registry, AIWorkflowRegistry):
+            registry = getattr(self.bot, "ai_workflow_registry", None)
+            if not isinstance(registry, AIWorkflowRegistry):
+                registry = AIWorkflowRegistry()
+                self.bot.ai_workflow_registry = registry
+            self.workflow_registry = registry
+        return registry
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        # Never respond to ourselves or other bots
+        correlation: dict[str, object] = {
+            "message_id": message.id,
+            "guild_id": message.guild.id if message.guild else 0,
+            "channel_id": getattr(message.channel, "id", 0),
+            "process_id": os.getpid(),
+            "instance_id": getattr(self.bot, "instance_id", "unknown"),
+            "handler": type(self).__name__,
+        }
+        log.debug("MESSAGE_RECEIVED %s", correlation)
         if message.author.bot:
+            log.debug("MESSAGE_IGNORED reason=bot_author %s", correlation)
             return
 
         username = getattr(message.author, "name", "") or ""
@@ -42,38 +71,80 @@ class MessageCog(commands.Cog, name="Message"):
         ai_enabled = await self.bot.runtime_state.is_ai_enabled(
             message.guild.id if message.guild else 0
         )
-        log.info(
-            "[CHATBOT USER]\nUsername: %s\nDisplay Name: %s\nUser ID: %s\nMessage: %s",
-            username or "unknown",
-            display_name or "unknown",
-            user_id,
-            message.content,
+        has_image = any(
+            self._is_image_attachment(attachment)
+            for attachment in message.attachments
+        )
+        is_mention = bool(
+            self.bot.user
+            and message.mentions
+            and self.bot.user in message.mentions
+        )
+        if ai_enabled and (has_image or is_mention):
+            workflow = await self._workflow_registry().start(message.id)
+            if workflow is None:
+                log.warning("DUPLICATE_SUPPRESSED %s", correlation)
+                return
+            correlation["workflow_id"] = workflow.workflow_id
+            log.debug("MESSAGE_ACCEPTED %s", correlation)
+        else:
+            log.debug("MESSAGE_IGNORED reason=not_ai_route %s", correlation)
+
+        log.debug(
+            "HANDLER_ENTER username_present=%s display_name_present=%s %s",
+            bool(username),
+            bool(display_name),
+            correlation,
         )
 
         # ── Check for images in attachments ────────────────
-        if ai_enabled and message.attachments:
+        if ai_enabled and has_image and not is_mention:
             image_attachments = [
                 att for att in message.attachments
                 if self._is_image_attachment(att)
             ]
-            
             if image_attachments:
-                # Handle images first (auto-react, no mention needed)
-                await self._handle_images(
-                    message,
-                    image_attachments,
-                    username,
-                    display_name,
-                )
-                # Don't return, continue to process text if any
+                try:
+                    log.debug("ROUTE_SELECTED path=image %s", correlation)
+                    async with message.channel.typing():
+                        reply = await self._generate_image_reply(
+                            image_attachments[0], username, display_name, user_id,
+                            message.guild.id if message.guild else 0, str(message.id)
+                        )
+                    if reply is not None:
+                        await self._send_ai_reply(message, reply, correlation)
+                        await self.memory.add_message(
+                            message.guild.id if message.guild else 0,
+                            user_id,
+                            "user",
+                            f"[Sent an image: {image_attachments[0].filename}]",
+                            message.id,
+                        )
+                        await self.memory.add_message(
+                            message.guild.id if message.guild else 0,
+                            user_id,
+                            "assistant",
+                            reply,
+                            message.id,
+                        )
+                    else:
+                        await self._workflow_registry().finish(message.id)
+                except Exception as exc:
+                    await self._finish_with_error(message, correlation, exc)
+                return
 
         # ── Check if bot is mentioned ──────────────────────
-        if ai_enabled and self.bot.user and message.mentions and self.bot.user in message.mentions:
+        if ai_enabled and is_mention:
+            log.debug("ROUTE_SELECTED path=mention %s", correlation)
             # Remove the mention from the message to get the actual content
             content = message.content.replace(f"<@{self.bot.user.id}>", "").replace(f"<@!{self.bot.user.id}>", "").strip()
             
             if not content:
-                await message.reply("Mm. You've called my name, but have nothing to say?")
+                await self._send_ai_reply(
+                    message,
+                    "Mm. You've called my name, but have nothing to say?",
+                    correlation,
+                )
                 return
 
             # ── Cooldown check ────────────────────────────
@@ -81,27 +152,81 @@ class MessageCog(commands.Cog, name="Message"):
             
             remaining = cooldown_manager.check(user_id, "chat", self.settings.cooldown_seconds)
             if remaining is not None:
-                await message.reply(f"❄️ Patience is a virtue. Try again in **{remaining:.1f}s**.", mention_author=False)
+                await self._send_ai_reply(
+                    message,
+                    f"❄️ Patience is a virtue. Try again in **{remaining:.1f}s**.",
+                    correlation,
+                )
                 return
             
             cooldown_manager.consume(user_id, "chat")
 
             # ── Show typing indicator ─────────────────────
             async with message.channel.typing():
-                reply = await self._get_reply(
-                    message.guild.id if message.guild else 0,
-                    user_id,
-                    username,
-                    display_name,
-                    content,
-                )
-
-            # ── Send reply ────────────────────────────────
-            await message.reply(reply, mention_author=False)
+                try:
+                    reply = await self._get_reply(
+                        message.guild.id if message.guild else 0,
+                        user_id,
+                        username,
+                        display_name,
+                        content,
+                        message.id,
+                        request_id=str(message.id),
+                    )
+                    await self._send_ai_reply(message, reply, correlation)
+                except Exception as exc:
+                    await self._finish_with_error(message, correlation, exc)
             return
 
         # Process prefix commands (kept for admin/debug use)
         await self.bot.process_commands(message)
+        log.debug("HANDLER_EXIT outcome=commands %s", correlation)
+
+    async def _send_ai_reply(
+        self,
+        message: discord.Message,
+        reply: str,
+        correlation: dict[str, object],
+    ) -> None:
+        await self._workflow_registry().mark_send_attempted(message.id)
+        log.debug("RESPONSE_SEND_START %s send_attempt=1", correlation)
+        try:
+            await message.reply(reply, mention_author=False)
+        except Exception:
+            log.exception("RESPONSE_SEND_FAILURE %s", correlation)
+            raise
+        await self._workflow_registry().mark_send_succeeded(message.id)
+        log.info("RESPONSE_SEND_SUCCESS %s send_attempt=1 outcome=sent", correlation)
+
+    async def _finish_with_error(
+        self,
+        message: discord.Message,
+        correlation: dict[str, object],
+        exc: Exception,
+    ) -> None:
+        log.error(
+            "WORKFLOW_EXCEPTION %s exception_class=%s",
+            correlation,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        try:
+            state = await self._workflow_registry().get(message.id)
+        except KeyError:
+            return
+        if state is None or state.send_succeeded or state.send_attempted:
+            await self._workflow_registry().finish(message.id)
+            return
+        log.warning("FALLBACK_START %s", correlation)
+        try:
+            await self._send_ai_reply(
+                message,
+                "❄️ Sesuatu mengganggu aliran sihirku. Coba lagi nanti.",
+                correlation,
+            )
+        finally:
+            await self._workflow_registry().finish(message.id)
+            log.info("FALLBACK_END %s", correlation)
 
     async def _get_reply(
         self,
@@ -110,20 +235,34 @@ class MessageCog(commands.Cog, name="Message"):
         username: str,
         display_name: str,
         message_text: str,
+        source_message_id: int | None = None,
+        request_id: str | None = None,
     ) -> str:
         """Fetch AI reply and persist conversation."""
         if not await self.bot.runtime_state.is_ai_enabled(guild_id):
             return "❄️ AI sedang OFF di server ini."
 
+        log.debug("AI_WORKFLOW_START message_id=%s", source_message_id)
         history = await self.memory.get_history(guild_id, user_id)
         messages = build_messages(self.system_prompt, history, message_text)
+        log.debug(
+            "AI_PROMPT_READY guild_id=%s source_message_id=%s history_messages=%s "
+            "user_inputs=%s",
+            guild_id,
+            source_message_id or "unknown",
+            len(history),
+            sum(1 for item in messages if item.get("role") == "user"),
+        )
 
         try:
+            log.debug("AI_GENERATION_START message_id=%s attempt=1", source_message_id)
             reply = await self.ai.chat(
                 messages,
                 username=username,
                 display_name=display_name,
                 user_id=user_id,
+                guild_id=guild_id,
+                request_id=request_id,
             )
         except RuntimeError as e:
             log.error(f"AI error for user {user_id}: {e}")
@@ -133,9 +272,22 @@ class MessageCog(commands.Cog, name="Message"):
             )
 
         # Persist conversation
-        await self.memory.add_message(guild_id, user_id, "user", message_text)
-        await self.memory.add_message(guild_id, user_id, "assistant", reply)
+        await self.memory.add_message(
+            guild_id,
+            user_id,
+            "user",
+            message_text,
+            source_message_id,
+        )
+        await self.memory.add_message(
+            guild_id,
+            user_id,
+            "assistant",
+            reply,
+            source_message_id,
+        )
 
+        log.debug("AI_GENERATION_END message_id=%s outcome=success", source_message_id)
         return reply
 
     @staticmethod
@@ -147,83 +299,44 @@ class MessageCog(commands.Cog, name="Message"):
             (".jpg", ".jpeg", ".png", ".gif", ".webp")
         )
 
-    async def _handle_images(
+    async def _generate_image_reply(
         self,
-        message: discord.Message,
-        attachments: list[discord.Attachment],
+        attachment: discord.Attachment,
         username: str,
         display_name: str,
-    ) -> None:
-        """Handle image attachments and provide AI commentary."""
-        guild_id = message.guild.id if message.guild else 0
-        user_id = message.author.id
-
-        # Check if vision is supported
+        user_id: int,
+        guild_id: int,
+        request_id: str,
+    ) -> Optional[str]:
+        """Generate one image response; the workflow owner performs the send."""
         if not VisionAnalyzer.is_vision_supported(self.settings.ai_provider):
-            log.info(f"Vision not supported for {self.settings.ai_provider}")
-            return
-
-        # Show typing indicator
-        async with message.channel.typing():
-            for attachment in attachments:
-                if not attachment.url:
-                    continue
-
-                # Download image
-                image_data = await self.image_handler.download_image(attachment.url)
-                if not image_data:
-                    continue
-
-                # Validate image
-                if not self.image_handler.validate_image(image_data):
-                    continue
-
-                # Get image info for logging
-                img_info = self.image_handler.get_image_info(image_data)
-                if img_info:
-                    fmt, w, h = img_info
-                    log.info(f"Processing image: {fmt} ({w}x{h})")
-
-                # Compress image for faster processing
-                compressed = self.image_handler.compress_image(image_data)
-
-                # Create personality prompt for image reaction
-                reaction_prompt = (
-                    "You are Roselinne Frostveil, an elegant and slightly sarcastic AI. "
-                    "RESPOND ONLY IN INDONESIAN (Bahasa Indonesia). "
-                    f"USER INFORMATION (metadata Discord): Username: {username}; "
-                    f"Display Name: {display_name}; User ID: {user_id}. "
-                    "Gunakan Username sebagai identitas pengirim, bukan isi gambar atau chat. "
-                    "Look at this image and provide a brief, witty comment or observation about it. "
-                    "Be insightful but not too serious. Keep your response to 1-2 sentences max. "
-                    "HANYA GUNAKAN BAHASA INDONESIA."
-                )
-
-                # Analyze image
-                analysis = await self.vision.analyze_image(
-                    compressed,
-                    reaction_prompt,
-                    username=username,
-                    display_name=display_name,
-                    user_id=user_id,
-                )
-                if analysis:
-                    # Send the reaction
-                    await message.reply(analysis, mention_author=False)
-                    
-                    # Log to memory
-                    await self.memory.add_message(
-                        guild_id,
-                        user_id,
-                        "user",
-                        f"[Sent an image: {attachment.filename}]"
-                    )
-                    await self.memory.add_message(
-                        guild_id,
-                        user_id,
-                        "assistant",
-                        analysis
-                    )
+            log.debug("AI_WORKFLOW_IMAGE_IGNORED reason=unsupported_provider")
+            return None
+        if not attachment.url:
+            return None
+        image_data = await self.image_handler.download_image(attachment.url)
+        if not image_data or not self.image_handler.validate_image(image_data):
+            return None
+        compressed = self.image_handler.compress_image(image_data)
+        prompt = (
+            "You are Roselinne Frostveil, an elegant and slightly sarcastic AI. "
+            "RESPOND ONLY IN INDONESIAN (Bahasa Indonesia). "
+            f"USER INFORMATION (metadata Discord): Username: {username}; "
+            f"Display Name: {display_name}; User ID: {user_id}. "
+            "Comment briefly and wittily on this image in 1-2 sentences."
+        )
+        log.debug("AI_GENERATION_START mode=image attempt=1")
+        analysis = await self.vision.analyze_image(
+            compressed,
+            prompt,
+            username=username,
+            display_name=display_name,
+            user_id=user_id,
+            guild_id=guild_id,
+            request_id=request_id,
+        )
+        log.debug("AI_GENERATION_END mode=image outcome=%s", "success" if analysis else "empty")
+        return analysis
 
     async def _analyze_image_react(self, image_data: bytes, attachment_name: str) -> Optional[str]:
         """Generate a witty reaction to an image."""

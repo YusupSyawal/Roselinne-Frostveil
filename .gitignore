@@ -29,7 +29,9 @@ env/
 data/memory.db
 data/memory/*.json
 data/runtime_state.json
+data/usage.db
 data/runtime_state.tmp
+data/roselinne.lock
 logs/*.log
 logs/*.log.*
 

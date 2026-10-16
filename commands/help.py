@@ -23,10 +23,16 @@ COMMANDS_INFO = [
     ("/ai_on",         "Enable AI responses (Manage Server)."),
     ("/ai_off",        "Disable AI requests (Manage Server)."),
     ("/ai_status",     "Show the current AI status (Manage Server)."),
+    ("/usage",         "Show local AI usage; choose summary, limits, or reset."),
     ("/welcomechannel", "Configure the welcome message channel (Manage Server)."),
     ("/leavechannel",  "Configure the leave message channel (Manage Server)."),
     ("/voice join",    "Join your current voice channel silently."),
     ("/voice leave",   "Leave the voice channel in this server."),
+    ("/music play",     "Play one YouTube video URL in your voice channel."),
+    ("/music queue",    "Show the guild music queue."),
+    ("/music nowplaying", "Show the current track."),
+    ("/music pause/resume", "Pause or resume playback."),
+    ("/music skip/stop/leave", "Control playback or leave voice."),
 ]
 
 

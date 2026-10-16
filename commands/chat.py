@@ -30,7 +30,9 @@ class ChatCog(commands.Cog, name="Chat"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.settings = BotSettings()
-        self.ai = AIClient(self.settings)
+        self.ai = AIClient(
+            self.settings, getattr(bot, "usage_monitor", None)
+        )
         self.enhancer = ResponseEnhancer(self.ai)
         self.enhancer.enable_verification(self.settings.enable_verification)
         self.memory = MemoryManager(self.settings)
@@ -84,6 +86,7 @@ class ChatCog(commands.Cog, name="Chat"):
                         interaction.user.name,
                         interaction.user.display_name,
                         message,
+                        request_id=str(interaction.id),
                     )
             else:
                 reply = await self._get_reply(
@@ -92,6 +95,7 @@ class ChatCog(commands.Cog, name="Chat"):
                     interaction.user.name,
                     interaction.user.display_name,
                     message,
+                    request_id=str(interaction.id),
                 )
         except discord.Forbidden:
             # Bot doesn't have permission to show typing — just get reply
@@ -113,6 +117,7 @@ class ChatCog(commands.Cog, name="Chat"):
         username: str,
         display_name: str,
         message: str,
+        request_id: str | None = None,
     ) -> str:
         """Fetch AI reply with web verification and persist both turns to memory."""
         if not await self.bot.runtime_state.is_ai_enabled(guild_id):
@@ -129,6 +134,8 @@ class ChatCog(commands.Cog, name="Chat"):
                 username=username,
                 display_name=display_name,
                 user_id=user_id,
+                guild_id=guild_id,
+                request_id=request_id,
             )
         except RuntimeError as e:
             log.error(f"AI error for user {user_id}: {e}")

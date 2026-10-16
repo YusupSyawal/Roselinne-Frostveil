@@ -14,6 +14,7 @@ A modern, modular Discord AI chatbot built with Python 3.11+, `discord.py` 2.x, 
 | **Persistent Memory** | SQLite-backed, survives bot restarts |
 | **Multi-provider AI** | OpenAI · Groq (free tier) · Ollama (local) |
 | **Slash Commands** | `/chat` `/resetmemory` `/ping` `/help` `/personality` |
+| **Mini Music** | `/music play` and queue/playback controls for one YouTube video |
 | **Cooldown System** | Configurable per-user anti-spam |
 | **Typing Indicator** | Shows "typing…" while AI thinks |
 | **Frost/silver-blue Embeds** | Themed Discord embeds throughout |
@@ -41,6 +42,7 @@ roselinne-frostveil/
 │
 ├── commands/
 │   ├── chat.py              ← /chat  /resetmemory  /personality
+│   ├── music.py             ← /music playback and queue controls
 │   ├── ping.py              ← /ping
 │   └── help.py              ← /help
 │
@@ -151,6 +153,8 @@ Still under the **Bot** tab, scroll to **Privileged Gateway Intents** and enable
    - ✅ Use Slash Commands
    - ✅ Embed Links
    - ✅ Read Message History
+   - ✅ Connect
+   - ✅ Speak
 4. Copy the generated URL and open it in your browser
 5. Select your server and click **Authorize**
 
@@ -207,7 +211,72 @@ You should see:
 ──────────────────────────────────────────────────────
 ```
 
+### Diagnosing duplicate AI replies
+
+Message-based AI replies use one workflow registry shared by the bot instance.
+The registry claims a Discord message ID before generation and keeps the
+completed state long enough to suppress a repeated gateway/listener event.
+Only the message workflow owner calls `message.reply`; generators, image
+analysis, verification, and formatting return data instead of sending it.
+
+Diagnostic records in `logs/roselinne.log` include `message_id`,
+`workflow_id`, `process_id`, and `instance_id` without logging tokens or the
+full message content. For a manual check, send one mention and search the log
+for that message ID: there should be one `AI_GENERATION_START` and one
+`RESPONSE_SEND_SUCCESS`. A second event should produce `DUPLICATE_SUPPRESSED`.
+
+The process lock prevents two Roselinne processes that share the same
+`data/roselinne.lock` path. Check the startup log for one
+`BOT_GATEWAY_READY` record and verify that no second process/container is
+running. Discord does not provide an idempotency key for a reply, so a network
+failure after a send begins remains an inherently ambiguous delivery outcome;
+the workflow deliberately does not retry that send or issue a fallback.
+
+Logging defaults to `INFO` on the console and `DEBUG` in the rotating file log.
+Set `LOG_LEVEL=DEBUG` when live console tracing is needed, or adjust
+`LOG_FILE_LEVEL` to control diagnostic detail retained in `logs/roselinne.log`.
+
+Slash commands are loaded in `setup_hook()` and synced before the gateway
+becomes ready. With `TEST_GUILD_ID`, the complete local tree is copied and
+synced to that guild for fast testing. Without it, commands are synced
+globally and Discord propagation can take time. Startup logs report the local
+command names, sync scope, synced names, and a post-sync Discord command
+comparison; in particular, look for `has_usage=true` in
+`APPLICATION_COMMAND_TREE_LOCAL`, `APPLICATION_COMMAND_SYNC`, and
+`APPLICATION_COMMAND_REMOTE`.
+
 ---
+
+## 🎵 Mini Music
+
+Mini Music is independent from the AI provider and remains available when AI is
+off. The supported commands are:
+
+- `/music play url:<URL>` — queue one YouTube video.
+- `/music queue` and `/music nowplaying` — inspect playback.
+- `/music pause`, `/music resume`, `/music skip`, `/music stop`, `/music leave`.
+
+Install the **FFmpeg executable** separately and ensure it is available on
+`PATH`, or set `FFMPEG_PATH` in `.env` to its executable path. The bot requires
+**Connect** and **Speak** permissions in the target voice channel. Queues are
+kept in memory per guild and are discarded when the process stops; an idle
+connection leaves after approximately five minutes when no track is queued.
+
+YouTube playback uses `yt-dlp` to obtain a temporary audio stream and does not
+download or permanently store music. Only single video URLs are accepted;
+playlists are rejected. Spotify URLs are validated, but a legitimate Spotify
+resolver is not configured yet, so the bot reports that limitation instead of
+pretending to play Spotify audio or bypassing DRM/access restrictions.
+
+Audio is decoded by FFmpeg to the PCM format expected by `discord.py`, then
+encoded once by Discord's Opus encoder. The default is 128 kbps, full-band
+music mode, with FEC enabled for resilience; the effective bitrate is capped
+to the voice channel's advertised bitrate when available. Configure
+`MUSIC_OPUS_BITRATE`, `MUSIC_OPUS_FEC`, and `MUSIC_EXPECTED_PACKET_LOSS` only
+within the documented safe ranges. No gain, bass boost, treble boost,
+aggressive compression, or loudness filter is enabled by default, which
+avoids clipping and preserves natural dynamics. Discord's actual voice bitrate
+and Opus path—not the source URL's nominal quality—remain the final limit.
 
 ## 🛡️ AI Control and Moderator Mode
 
@@ -412,8 +481,25 @@ docker compose up --build -d
 | `MEMORY_MAX_MESSAGES` | `20` | Messages kept per user |
 | `COOLDOWN_SECONDS` | `5` | Seconds between `/chat` calls |
 | `MAX_TOKENS` | `1000` | Max tokens in AI response |
-| `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `LOG_LEVEL` | `INFO` | Console level: `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `LOG_FILE_LEVEL` | `DEBUG` | Rotating file level: `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `TEST_GUILD_ID` | — | Optional: sync commands to one server |
+
+### Token and usage monitoring
+
+`/usage` shows local AI request and token accounting for the current server.
+Choose the `section` option as `summary`, `limits`, or `reset`; Discord
+application commands cannot expose both a standalone `/usage` command and a
+`/usage` subcommand group with the same name. The reset option requires
+administrator/server-owner permission and `confirm:true`.
+
+Usage data is stored in `data/usage.db`, separate from the conversation
+database at `data/memory.db`. Provider usage metadata is recorded as actual
+when returned by OpenAI, Groq, Gemini, or Ollama. Otherwise a dependency-free
+local estimate is stored and labelled as estimated. Failed provider attempts
+count as requests but do not create output tokens. The feature does not query
+provider quota endpoints and does not claim local statistics are official
+provider usage.
 
 ---
 

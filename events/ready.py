@@ -4,6 +4,7 @@ on_ready event — fires once the bot has connected and cached guilds.
 """
 
 import logging
+import os
 
 import discord
 from discord.ext import commands
@@ -26,6 +27,11 @@ class ReadyCog(commands.Cog, name="Ready"):
         log.info(f"  Logged in as : {self.bot.user} (ID: {self.bot.user.id})")
         log.info(f"  Guilds       : {guild_count}")
         log.info(f"  Latency      : {round(self.bot.latency * 1000)} ms")
+        log.info(
+            "BOT_GATEWAY_READY process_id=%s instance_id=%s",
+            os.getpid(),
+            getattr(self.bot, "instance_id", "unknown"),
+        )
         log.info("─" * 55)
 
         # Set a presence fitting the character

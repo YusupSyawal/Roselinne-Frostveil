@@ -6,11 +6,13 @@ Provider is selected at runtime from the AI_PROVIDER env variable.
 
 import logging
 import re
-from typing import List, Dict, Optional
+from contextvars import ContextVar
+from typing import Any, List, Dict, Optional
 
 import aiohttp
 
 from config.settings import BotSettings
+from utils.usage_monitor import UsageMonitor, estimate_messages_tokens, estimate_tokens
 
 log = logging.getLogger("roselinne.ai")
 
@@ -37,9 +39,17 @@ class AIClient:
     All providers expose the same interface: async chat() → str
     """
 
-    def __init__(self, settings: BotSettings):
+    def __init__(
+        self,
+        settings: BotSettings,
+        usage_monitor: UsageMonitor | None = None,
+    ):
         self.settings = settings
         self.provider = settings.ai_provider
+        self.usage_monitor = usage_monitor
+        self._usage_metadata: ContextVar[dict[str, Any] | None] = ContextVar(
+            "ai_usage_metadata", default=None
+        )
         log.info(f"AI provider: {self.provider}")
 
     async def chat(
@@ -49,6 +59,8 @@ class AIClient:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
         user_id: Optional[int] = None,
+        guild_id: Optional[int] = None,
+        request_id: Optional[str] = None,
     ) -> str:
         """
         Send a messages list and return the assistant's text response.
@@ -62,17 +74,70 @@ class AIClient:
             user_id=user_id,
         )
 
-        if self.provider == "openai":
-            return await self._openai(messages, tokens)
-        elif self.provider == "groq":
-            return await self._groq(messages, tokens)
-        elif self.provider == "gemini":
-            return await self._gemini(messages, tokens)
-        elif self.provider == "ollama":
-            return await self._ollama(messages, tokens)
-        else:
-            raise ValueError(f"Unknown AI provider: '{self.provider}'. "
-                             "Set AI_PROVIDER to openai, groq, gemini, or ollama.")
+        self._usage_metadata.set(None)
+        try:
+            if self.provider == "openai":
+                reply = await self._openai(messages, tokens)
+            elif self.provider == "groq":
+                reply = await self._groq(messages, tokens)
+            elif self.provider == "gemini":
+                reply = await self._gemini(messages, tokens)
+            elif self.provider == "ollama":
+                reply = await self._ollama(messages, tokens)
+            else:
+                raise ValueError(f"Unknown AI provider: '{self.provider}'. "
+                                 "Set AI_PROVIDER to openai, groq, gemini, or ollama.")
+        except Exception:
+            await self._record_usage(
+                messages, "", guild_id, user_id, request_id, success=False
+            )
+            raise
+        await self._record_usage(
+            messages, reply, guild_id, user_id, request_id, success=True
+        )
+        return reply
+
+    async def _record_usage(
+        self,
+        messages: List[Dict[str, str]],
+        reply: str,
+        guild_id: Optional[int],
+        user_id: Optional[int],
+        request_id: Optional[str],
+        *,
+        success: bool,
+    ) -> None:
+        if self.usage_monitor is None:
+            return
+        metadata = self._usage_metadata.get() or {}
+        input_tokens = metadata.get("input_tokens", estimate_messages_tokens(messages))
+        output_tokens = metadata.get("output_tokens", estimate_tokens(reply))
+        input_source = metadata.get("input_source", "estimated")
+        output_source = metadata.get("output_source", "estimated")
+        try:
+            await self.usage_monitor.record(
+                guild_id=guild_id,
+                user_id=user_id,
+                provider=self.provider,
+                model=self.active_model,
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                input_token_source=input_source,
+                output_token_source=output_source,
+                success=success,
+                request_id=request_id,
+            )
+        except Exception:
+            log.exception("Could not persist local AI usage request_id=%s", request_id)
+
+    @property
+    def active_model(self) -> str:
+        return {
+            "openai": getattr(self.settings, "openai_model", "Tidak tersedia"),
+            "groq": getattr(self.settings, "groq_model", "Tidak tersedia"),
+            "gemini": getattr(self.settings, "gemini_model", "Tidak tersedia"),
+            "ollama": getattr(self.settings, "ollama_model", "Tidak tersedia"),
+        }.get(self.provider, "Tidak tersedia")
 
     @staticmethod
     def _apply_response_style(
@@ -219,6 +284,14 @@ class AIClient:
                 max_tokens=max_tokens,
                 temperature=0.8,
             )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                self._usage_metadata.set({
+                    "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                    "input_source": "actual",
+                    "output_source": "actual",
+                })
             return response.choices[0].message.content or ""
         except Exception as e:
             log.error(f"OpenAI error: {e}")
@@ -250,6 +323,14 @@ class AIClient:
                     raise RuntimeError(f"Groq API error {resp.status}: {text}")
                 data = await resp.json()
 
+        usage = data.get("usage", {})
+        if usage:
+            self._usage_metadata.set({
+                "input_tokens": usage.get("prompt_tokens", 0) or 0,
+                "output_tokens": usage.get("completion_tokens", 0) or 0,
+                "input_source": "actual",
+                "output_source": "actual",
+            })
         return data["choices"][0]["message"]["content"] or ""
     # ── Gemini ──────────────────────────────────────────
 
@@ -281,6 +362,14 @@ class AIClient:
                     temperature=0.8,
                 )
             )
+            usage = getattr(response, "usage_metadata", None)
+            if usage is not None:
+                self._usage_metadata.set({
+                    "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+                    "output_tokens": getattr(usage, "candidates_token_count", 0) or 0,
+                    "input_source": "actual",
+                    "output_source": "actual",
+                })
             return response.text or ""
         except Exception as e:
             log.error(f"Gemini error: {e}")
@@ -309,4 +398,11 @@ class AIClient:
                     "Make sure Ollama is running."
                 )
 
+        if "prompt_eval_count" in data or "eval_count" in data:
+            self._usage_metadata.set({
+                "input_tokens": data.get("prompt_eval_count", 0) or 0,
+                "output_tokens": data.get("eval_count", 0) or 0,
+                "input_source": "actual",
+                "output_source": "actual",
+            })
         return data["message"]["content"] or ""

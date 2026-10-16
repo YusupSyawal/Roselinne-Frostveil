@@ -30,6 +30,8 @@ class ResponseEnhancer:
         username: Optional[str] = None,
         display_name: Optional[str] = None,
         user_id: Optional[int] = None,
+        guild_id: Optional[int] = None,
+        request_id: Optional[str] = None,
     ) -> str:
         """
         Generate an AI response and optionally verify it against web sources.
@@ -46,6 +48,8 @@ class ResponseEnhancer:
                 username=username,
                 display_name=display_name,
                 user_id=user_id,
+                guild_id=guild_id,
+                request_id=request_id,
             )
         except RuntimeError as e:
             log.error(f"Failed to generate response: {e}")
@@ -85,4 +89,4 @@ class ResponseEnhancer:
     def enable_verification(self, enabled: bool) -> None:
         """Toggle web verification on/off."""
         self.verifier.enable_verification(enabled)
-        log.info(f"Response verification {'enabled' if enabled else 'disabled'}")
+        log.info("Response verification %s", "enabled" if enabled else "disabled")

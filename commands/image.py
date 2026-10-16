@@ -24,7 +24,9 @@ class ImageCog(commands.Cog, name="Image"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.settings = BotSettings()
-        self.vision = VisionAnalyzer(self.settings)
+        self.vision = VisionAnalyzer(
+            self.settings, getattr(bot, "usage_monitor", None)
+        )
         self.image_handler = ImageHandler()
         log.info("ImageCog loaded.")
 
@@ -135,6 +137,8 @@ class ImageCog(commands.Cog, name="Image"):
                 username=interaction.user.name,
                 display_name=interaction.user.display_name,
                 user_id=user_id,
+                guild_id=interaction.guild_id or 0,
+                request_id=str(interaction.id),
             )
 
             if not analysis:

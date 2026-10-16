@@ -39,6 +39,16 @@ class BotSettings:
     memory_max_messages: int = field(default_factory=lambda: int(os.getenv("MEMORY_MAX_MESSAGES", "20")))
     cooldown_seconds: int = field(default_factory=lambda: int(os.getenv("COOLDOWN_SECONDS", "5")))
     max_tokens: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1000")))
+    ffmpeg_path: str = field(default_factory=lambda: os.getenv("FFMPEG_PATH", "ffmpeg"))
+    music_opus_bitrate: int = field(default_factory=lambda: _bounded_int_env(
+        "MUSIC_OPUS_BITRATE", 128, minimum=16, maximum=512
+    ))
+    music_opus_fec: bool = field(
+        default_factory=lambda: os.getenv("MUSIC_OPUS_FEC", "true").lower() in ("true", "1", "yes")
+    )
+    music_expected_packet_loss: float = field(
+        default_factory=lambda: _bounded_float_env("MUSIC_EXPECTED_PACKET_LOSS", 0.15, minimum=0.0, maximum=1.0)
+    )
     
     # ── Response Verification ────────────────────────────
     enable_verification: bool = field(default_factory=lambda: os.getenv("ENABLE_VERIFICATION", "true").lower() in ("true", "1", "yes"))
@@ -48,6 +58,7 @@ class BotSettings:
     personality_file: Path = BASE_DIR / "config" / "personality.txt"
     memory_dir: Path = BASE_DIR / "data" / "memory"
     db_path: Path = BASE_DIR / "data" / "memory.db"
+    usage_db_path: Path = BASE_DIR / "data" / "usage.db"
     runtime_state_path: Path = BASE_DIR / "data" / "runtime_state.json"
     welcome_channel_id: int | None = field(
         default_factory=lambda: _optional_int_env("WELCOME_CHANNEL_ID")
@@ -76,3 +87,25 @@ def _optional_int_env(name: str) -> int | None:
         return int(value)
     except ValueError:
         raise ValueError(f"{name} must be a Discord channel ID integer.") from None
+
+
+def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    value = os.getenv(name, str(default)).strip()
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer.") from None
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return parsed
+
+
+def _bounded_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    value = os.getenv(name, str(default)).strip()
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise ValueError(f"{name} must be a number.") from None
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return parsed

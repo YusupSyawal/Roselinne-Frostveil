@@ -5,12 +5,10 @@ Keeps the last N messages per (guild_id, user_id) pair.
 """
 
 import asyncio
-import json
 import logging
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 from config.settings import BotSettings
 
@@ -40,12 +38,24 @@ class MemoryManager:
                     user_id     TEXT    NOT NULL,
                     role        TEXT    NOT NULL,
                     content     TEXT    NOT NULL,
+                    source_message_id TEXT,
                     created_at  REAL    DEFAULT (unixepoch('now'))
                 )
             """)
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(conversation)").fetchall()
+            }
+            if "source_message_id" not in columns:
+                conn.execute("ALTER TABLE conversation ADD COLUMN source_message_id TEXT")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_conv_user
                 ON conversation(guild_id, user_id, created_at)
+            """)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_source_message
+                ON conversation(guild_id, user_id, role, source_message_id)
+                WHERE source_message_id IS NOT NULL
             """)
         log.debug(f"Memory DB ready at {self.db_path}")
 
@@ -69,11 +79,23 @@ class MemoryManager:
         async with self._lock:
             return await asyncio.to_thread(self._get_history_sync, str(guild_id), str(user_id))
 
-    async def add_message(self, guild_id: int, user_id: int, role: str, content: str) -> None:
+    async def add_message(
+        self,
+        guild_id: int,
+        user_id: int,
+        role: str,
+        content: str,
+        source_message_id: int | None = None,
+    ) -> None:
         """Append a message and prune old ones in one transaction."""
         async with self._lock:
             await asyncio.to_thread(
-                self._add_message_sync, str(guild_id), str(user_id), role, content
+                self._add_message_sync,
+                str(guild_id),
+                str(user_id),
+                role,
+                content,
+                str(source_message_id) if source_message_id is not None else None,
             )
 
     async def clear_history(self, guild_id: int, user_id: int) -> int:
@@ -95,21 +117,69 @@ class MemoryManager:
     def _get_history_sync(self, guild_id: str, user_id: str) -> List[Dict[str, str]]:
         with self._conn() as conn:
             rows = conn.execute("""
-                SELECT role, content FROM (
-                    SELECT role, content, created_at
+                SELECT role, content, created_at, source_message_id FROM (
+                    SELECT role, content, created_at, source_message_id, id
                     FROM conversation
                     WHERE guild_id = ? AND user_id = ?
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT ?
-                ) ORDER BY created_at ASC
+                ) ORDER BY created_at ASC, id ASC
             """, (guild_id, user_id, self.max_messages)).fetchall()
-        return [{"role": r["role"], "content": r["content"]} for r in rows]
+        history = [
+            {
+                "role": r["role"],
+                "content": r["content"],
+                "_created_at": r["created_at"],
+                "_source_message_id": r["source_message_id"],
+            }
+            for r in rows
+        ]
+        history = self._remove_legacy_duplicate_turns(history)
+        for message in history:
+            message.pop("_created_at", None)
+            message.pop("_source_message_id", None)
+        return history
 
-    def _add_message_sync(self, guild_id: str, user_id: str, role: str, content: str) -> None:
+    @staticmethod
+    def _remove_legacy_duplicate_turns(
+        history: List[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        """Remove duplicate legacy turns while preserving identified message IDs."""
+        collapsed: List[Dict[str, str]] = []
+        for message in history:
+            if (
+                message.get("role") == "user"
+                and message.get("_source_message_id") is None
+                and len(collapsed) >= 2
+                and collapsed[-2].get("role") == "user"
+                and collapsed[-2].get("content") == message.get("content")
+                and collapsed[-2].get("_source_message_id") is None
+                and float(message.get("_created_at", 0)) - float(
+                    collapsed[-2].get("_created_at", 0)
+                ) <= 1.0
+                and collapsed[-1].get("role") == "assistant"
+            ):
+                collapsed.pop()
+                collapsed.pop()
+            collapsed.append(message)
+        return collapsed
+
+    def _add_message_sync(
+        self,
+        guild_id: str,
+        user_id: str,
+        role: str,
+        content: str,
+        source_message_id: str | None,
+    ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO conversation (guild_id, user_id, role, content) VALUES (?, ?, ?, ?)",
-                (guild_id, user_id, role, content),
+                """
+                INSERT OR IGNORE INTO conversation
+                    (guild_id, user_id, role, content, source_message_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (guild_id, user_id, role, content, source_message_id),
             )
             # Prune: keep only the most recent max_messages rows
             conn.execute("""
@@ -118,7 +188,7 @@ class MemoryManager:
                   AND id NOT IN (
                       SELECT id FROM conversation
                       WHERE guild_id = ? AND user_id = ?
-                      ORDER BY created_at DESC
+                      ORDER BY created_at DESC, id DESC
                       LIMIT ?
                   )
             """, (guild_id, user_id, guild_id, user_id, self.max_messages))
